@@ -1,0 +1,34 @@
+{
+  "products": [
+    {
+      "name": "Premium Wireless Headphones",
+      "description": "High-quality wireless headphones with noise cancellation and 30-hour battery life",
+      "price": 199.99,
+      "delivery": "2-3 business days"
+    },
+    {
+      "name": "Smart Fitness Watch",
+      "description": "Water-resistant fitness tracker with heart rate monitoring and sleep tracking",
+      "price": 149.99,
+      "delivery": "1-2 business days"
+    },
+    {
+      "name": "4K Ultra HD Smart TV",
+      "description": "55-inch 4K Smart TV with HDR and built-in streaming apps",
+      "price": 699.99,
+      "delivery": "5-7 business days"
+    },
+    {
+      "name": "Laptop Backpack",
+      "description": "Water-resistant backpack with USB charging port and laptop compartment",
+      "price": 49.99,
+      "delivery": "2-3 business days"
+    },
+    {
+      "name": "Coffee Maker",
+      "description": "Programmable coffee maker with 12-cup capacity and auto-shutoff",
+      "price": 79.99,
+      "delivery": "3-4 business days"
+    }
+  ]
+}

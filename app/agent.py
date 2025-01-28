@@ -1,18 +1,24 @@
-from typing import Annotated, Any, Dict, List, TypedDict
-from langgraph.graph import Graph
-from langgraph.prebuilt import ToolMessage
-from operator import itemgetter
+from typing import Dict, List, TypedDict
+from langgraph.graph import StateGraph
 import json
-from langchain_core.messages import HumanMessage, AIMessage
+from uuid import uuid4
+from dotenv import load_dotenv
+
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage
 from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+_ = load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
+CORS(app)
+
 
 # Load inventory data
-with open("inventory.json", "r") as f:
+with open("app/inventory.json", "r") as f:
     inventory = json.load(f)
 
 
@@ -26,14 +32,14 @@ class AgentState(TypedDict):
 
 
 # Initialize LLM
-llm = ChatOpenAI(temperature=0)
+llm = ChatOpenAI(temperature=0, model="gpt-4o-mini-2024-07-18")
 
 
 # Node 1: Greeting
 def greet(state: AgentState) -> AgentState:
     response = llm.invoke(
         [
-            HumanMessage(
+            SystemMessage(
                 content="You are an ecommerce assistant. Generate a friendly greeting asking what the user would like to purchase today."
             )
         ]
@@ -59,6 +65,10 @@ def check_intent(state: AgentState) -> AgentState:
         ]
     )
 
+    if not response or not response.content or type(response.content) != str:
+        state["intent"] = "not_purchase"
+        return state
+
     state["intent"] = response.content.strip()
     state["next_step"] = (
         "search_inventory" if state["intent"] == "purchase" else "handle_non_purchase"
@@ -79,6 +89,10 @@ def search_inventory(state: AgentState) -> AgentState:
     """
 
     response = llm.invoke([HumanMessage(content=prompt)])
+
+    if not response or not response.content or type(response.content) != dict:
+        state["next_step"] = "handle_no_matches"
+        return state
 
     try:
         matches = json.loads(response.content)
@@ -110,6 +124,13 @@ def present_options(state: AgentState) -> AgentState:
 # Node 5: Handle Selection
 def handle_selection(state: AgentState) -> AgentState:
     last_user_message = state["messages"][-2].content
+
+    if not last_user_message or type(last_user_message) != str:
+        state["messages"].append(
+            AIMessage(content="Please enter a valid number between 1 and 3.")
+        )
+        state["next_step"] = "present_options"
+        return state
 
     try:
         selection = int(last_user_message) - 1
@@ -171,7 +192,7 @@ def handle_no_matches(state: AgentState) -> AgentState:
 
 # Create the graph
 def create_graph():
-    workflow = Graph()
+    workflow = StateGraph(AgentState)
 
     # Add nodes
     workflow.add_node("greet", greet)
@@ -204,30 +225,65 @@ def create_graph():
     workflow.add_edge("handle_non_purchase", "check_intent")
     workflow.add_edge("handle_no_matches", "check_intent")
 
+    # Add Entrypoints and Finish points
+    workflow.set_entry_point("greet")
+    workflow.set_finish_point("handle_selection")
+
     return workflow.compile()
 
 
 # Initialize the graph
 graph = create_graph()
 
+SESSION_STATES: Dict[str, AgentState] = {}
+
 
 # Flask routes
-@app.route("/chat", methods=["POST"])
-def chat():
-    data = request.json
-    message = data.get("message", "")
-
-    # Initialize or get conversation state
-    state = {
-        "messages": [HumanMessage(content=message)],
-        "intent": "",
-        "matches": [],
-        "selected_item": {},
-        "next_step": "greet" if not message else "check_intent",
+@app.route("/agent", methods=["POST"])
+def agent():
+    """
+    This endpoint is called repeatedly by the client with user input.
+    JSON Example:
+    {
+      "session_id": "...",        # optional, if not provided we create a new session
+      "user_input": "iPhone 14"   # or "1", or "y", etc. based on the conversation
     }
+    """
+    data = request.json or {}
+    message = data.get("message", "")
+    session_id = data.get("session_id")
+
+    # If no session_id, create a new conversation session
+    if not session_id or session_id not in SESSION_STATES:
+        # Initialize or get conversation state
+        initial_state: AgentState = {
+            "messages": [HumanMessage(content=message)],
+            "intent": "",
+            "matches": [],
+            "selected_item": {},
+            "next_step": "greet" if not message else "check_intent",
+        }
+
+        session_id = str(uuid4())
+        SESSION_STATES[session_id] = initial_state
+
+    state = SESSION_STATES[session_id]
 
     # Run the graph
-    final_state = graph(state)
+    step_gen = graph.stream(state)
+    final_state = None
+
+    # Consume all steps in the generator to get the final state
+    for step_state in step_gen:
+        # Each step_state will be like {"node_name": actual_state}
+        # Get the actual state from the dictionary
+        print("ENTER HERE", step_state)
+        final_state = list(step_state.values())[0]
+
+    if not final_state:
+        return jsonify({"response": "An error occurred."})
+
+    print("FINAL STATE:", final_state)
 
     # Extract the last message
     last_message = final_state["messages"][-1].content
