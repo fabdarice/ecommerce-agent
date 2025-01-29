@@ -1,6 +1,8 @@
 langgraph
 flask
 langchain_openai
+langchain
 python-dotenv
 cdp-sdk
 flask_cors
+redis

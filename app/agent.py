@@ -3,12 +3,16 @@ from langgraph.graph import StateGraph
 import json
 from uuid import uuid4
 from dotenv import load_dotenv
+from langchain.load.dump import dumps
+from langchain.load.load import loads
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+
+from app.redis_client import redis_cli
 
 _ = load_dotenv()
 
@@ -37,9 +41,10 @@ llm = ChatOpenAI(temperature=0, model="gpt-4o-mini-2024-07-18")
 
 # Node 1: Greeting
 def greet(state: AgentState) -> AgentState:
+    print("-------------------- ENTER GREET ---------------------")
     response = llm.invoke(
         [
-            SystemMessage(
+            AIMessage(
                 content="You are an ecommerce assistant. Generate a friendly greeting asking what the user would like to purchase today. The conversation is via chatbox."
             )
         ]
@@ -53,7 +58,9 @@ def greet(state: AgentState) -> AgentState:
 # Node 2: Intent Classification
 def check_intent(state: AgentState) -> AgentState:
     # TODO: Is this -2 or -1?
+    print("----------------ENTER CHECK_INTENT--------------")
     last_user_message = state["messages"][-1].content  # Get the user's last message
+    print("LAST USER MESSAGE:", last_user_message)
 
     response = llm.invoke(
         [
@@ -242,8 +249,6 @@ def create_graph():
 # Initialize the graph
 graph = create_graph()
 
-SESSION_STATES: Dict[str, AgentState] = {}
-
 
 # Flask routes
 @app.route("/agent", methods=["POST"])
@@ -260,10 +265,20 @@ def agent():
     message = data.get("message", "")
     session_id = data.get("session_id")
 
-    # If no session_id, create a new conversation session
-    if not session_id or session_id not in SESSION_STATES:
-        # Initialize or get conversation state
-        initial_state: AgentState = {
+    # 1) If we don't have a session_id, create a new one.
+    if not session_id:
+        session_id = str(uuid4())
+
+    # 2) Try to load existing state from Redis.
+    raw_state = redis_cli.get(session_id)
+    if raw_state:
+        print("------- FOUND EIXSTING STATE IN REDIS --------")
+        state = loads(raw_state)
+    else:
+        print("------- NEW SESSION --------")
+        # 3) If no existing state, create an initial one.
+        #    This is similar to your original code.
+        state = {
             "messages": [
                 SystemMessage(
                     content="You are an ecommerce assistant. Generate a friendly greeting asking what the user would like to purchase today. The conversation is via chatbox."
@@ -274,11 +289,6 @@ def agent():
             "next_step": "greet" if not message else "check_intent",
             "require_user_input": False,
         }
-
-        session_id = str(uuid4())
-        SESSION_STATES[session_id] = initial_state
-
-    state = SESSION_STATES[session_id]
     state["messages"].append(HumanMessage(content=message))
 
     # Run the graph
@@ -293,6 +303,9 @@ def agent():
         final_state = list(step_state.values())[0]
         if final_state["require_user_input"] is True:
             break
+
+    # 7) Persist the updated final state back to Redis
+    redis_cli.set(session_id, dumps(state))
 
     if not final_state:
         return jsonify({"response": "An error occurred."})
