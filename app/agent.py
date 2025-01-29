@@ -25,10 +25,10 @@ with open("app/inventory.json", "r") as f:
 # Define state type
 class AgentState(TypedDict):
     messages: List[BaseMessage]
-    intent: str
     matches: List[Dict]
     selected_item: Dict
     next_step: str
+    require_user_input: bool
 
 
 # Initialize LLM
@@ -40,22 +40,24 @@ def greet(state: AgentState) -> AgentState:
     response = llm.invoke(
         [
             SystemMessage(
-                content="You are an ecommerce assistant. Generate a friendly greeting asking what the user would like to purchase today."
+                content="You are an ecommerce assistant. Generate a friendly greeting asking what the user would like to purchase today. The conversation is via chatbox."
             )
         ]
     )
     state["messages"].append(response)
     state["next_step"] = "check_intent"
+    state["require_user_input"] = True
     return state
 
 
 # Node 2: Intent Classification
 def check_intent(state: AgentState) -> AgentState:
-    last_user_message = state["messages"][-2].content  # Get the user's last message
+    # TODO: Is this -2 or -1?
+    last_user_message = state["messages"][-1].content  # Get the user's last message
 
     response = llm.invoke(
         [
-            HumanMessage(
+            AIMessage(
                 content=f"""
         Determine if the following message is about purchasing a product or not.
         Message: {last_user_message}
@@ -65,14 +67,16 @@ def check_intent(state: AgentState) -> AgentState:
         ]
     )
 
-    if not response or not response.content or type(response.content) != str:
-        state["intent"] = "not_purchase"
+    if (
+        not response
+        or not response.content
+        or type(response.content) != str
+        or response.content.strip() == "not_purchase"
+    ):
+        state["next_step"] = "handle_non_purchase"
         return state
 
-    state["intent"] = response.content.strip()
-    state["next_step"] = (
-        "search_inventory" if state["intent"] == "purchase" else "handle_non_purchase"
-    )
+    state["next_step"] = "search_inventory"
     return state
 
 
@@ -115,17 +119,18 @@ def present_options(state: AgentState) -> AgentState:
     Format the response nicely with prices and descriptions.
     """
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response = llm.invoke([AIMessage(content=prompt)])
     state["messages"].append(response)
     state["next_step"] = "handle_selection"
+    state["require_user_input"] = True
     return state
 
 
 # Node 5: Handle Selection
 def handle_selection(state: AgentState) -> AgentState:
-    last_user_message = state["messages"][-2].content
+    last_user_message = state["messages"][-1]
 
-    if not last_user_message or type(last_user_message) != str:
+    if not last_user_message or not isinstance(last_user_message, HumanMessage):
         state["messages"].append(
             AIMessage(content="Please enter a valid number between 1 and 3.")
         )
@@ -133,7 +138,7 @@ def handle_selection(state: AgentState) -> AgentState:
         return state
 
     try:
-        selection = int(last_user_message) - 1
+        selection = int(last_user_message.content) - 1
         if 0 <= selection < len(state["matches"]):
             state["selected_item"] = state["matches"][selection]
 
@@ -143,7 +148,7 @@ def handle_selection(state: AgentState) -> AgentState:
             Ask them to respond with Y or N.
             """
 
-            response = llm.invoke([HumanMessage(content=prompt)])
+            response = llm.invoke([AIMessage(content=prompt)])
             state["messages"].append(response)
             state["next_step"] = "confirm_purchase"
         else:
@@ -166,13 +171,14 @@ def handle_selection(state: AgentState) -> AgentState:
 def handle_non_purchase(state: AgentState) -> AgentState:
     response = llm.invoke(
         [
-            HumanMessage(
+            AIMessage(
                 content="Generate a polite message explaining that this agent can only assist with product purchases, and ask what they would like to purchase."
             )
         ]
     )
     state["messages"].append(response)
     state["next_step"] = "check_intent"
+    state["require_user_input"] = True
     return state
 
 
@@ -180,13 +186,14 @@ def handle_non_purchase(state: AgentState) -> AgentState:
 def handle_no_matches(state: AgentState) -> AgentState:
     response = llm.invoke(
         [
-            HumanMessage(
+            AIMessage(
                 content="Generate a message informing the user that no matches were found and asking them what else they would like to purchase."
             )
         ]
     )
     state["messages"].append(response)
     state["next_step"] = "check_intent"
+    state["require_user_input"] = True
     return state
 
 
@@ -257,17 +264,22 @@ def agent():
     if not session_id or session_id not in SESSION_STATES:
         # Initialize or get conversation state
         initial_state: AgentState = {
-            "messages": [HumanMessage(content=message)],
-            "intent": "",
+            "messages": [
+                SystemMessage(
+                    content="You are an ecommerce assistant. Generate a friendly greeting asking what the user would like to purchase today. The conversation is via chatbox."
+                )
+            ],
             "matches": [],
             "selected_item": {},
             "next_step": "greet" if not message else "check_intent",
+            "require_user_input": False,
         }
 
         session_id = str(uuid4())
         SESSION_STATES[session_id] = initial_state
 
     state = SESSION_STATES[session_id]
+    state["messages"].append(HumanMessage(content=message))
 
     # Run the graph
     step_gen = graph.stream(state)
@@ -279,6 +291,8 @@ def agent():
         # Get the actual state from the dictionary
         print("ENTER HERE", step_state)
         final_state = list(step_state.values())[0]
+        if final_state["require_user_input"] is True:
+            break
 
     if not final_state:
         return jsonify({"response": "An error occurred."})
@@ -291,8 +305,8 @@ def agent():
     return jsonify(
         {
             "response": last_message,
+            "session_id": session_id,
             "state": {
-                "intent": final_state["intent"],
                 "matches": final_state["matches"],
                 "selected_item": final_state["selected_item"],
                 "next_step": final_state["next_step"],
