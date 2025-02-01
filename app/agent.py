@@ -1,24 +1,38 @@
 from typing import Dict, List, TypedDict
-from langgraph.graph import StateGraph
 import json
 from uuid import uuid4
 from dotenv import load_dotenv
-from langchain.load.dump import dumps
-from langchain.load.load import loads
 
+from langgraph.graph import add_messages
+from langchain_core.runnables.config import RunnableConfig
+from langgraph.graph import StateGraph
+from langgraph.checkpoint.postgres import PostgresSaver
+from IPython.display import Image, display
+
+from psycopg_pool import ConnectionPool
+
+
+# from langgraph.checkpoint.memory import MemorySaver
+# from langchain.load.dump import dumps
+# from langchain.load.load import loads
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import BaseMessage
+
+# from langchain_core.messages import BaseMessage
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from langgraph.graph.message import Annotated, BaseMessage, Sequence
 
-from app.redis_client import redis_cli
+# from app.redis_client import redis_cli
 
 _ = load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
+
+
+DB_URI = "postgresql://fabda@localhost:5432/agentshop?sslmode=disable"
 
 
 # Load inventory data
@@ -28,7 +42,7 @@ with open("app/inventory.json", "r") as f:
 
 # Define state type
 class AgentState(TypedDict):
-    messages: List[BaseMessage]
+    messages: Annotated[Sequence[BaseMessage], add_messages]
     matches: List[Dict]
     selected_item: Dict
     next_step: str
@@ -42,17 +56,19 @@ llm = ChatOpenAI(temperature=0, model="gpt-4o-mini-2024-07-18")
 # Node 1: Greeting
 def greet(state: AgentState) -> AgentState:
     print("-------------------- ENTER GREET ---------------------")
-    response = llm.invoke(
-        [
-            AIMessage(
-                content="You are an ecommerce assistant. Generate a friendly greeting asking what the user would like to purchase today. The conversation is via chatbox."
-            )
-        ]
+    greet_message = SystemMessage(
+        content="You are an ecommerce assistant. Generate a friendly greeting asking what the user would like to purchase today. The conversation is via chatbox."
     )
-    state["messages"].append(response)
-    state["next_step"] = "check_intent"
-    state["require_user_input"] = True
-    return state
+
+    response = llm.invoke([greet_message])
+
+    return {
+        "messages": [response],
+        "next_step": "check_intent",
+        "require_user_input": True,
+        "matches": [],
+        "selected_item": {},
+    }
 
 
 # Node 2: Intent Classification
@@ -138,9 +154,9 @@ def handle_selection(state: AgentState) -> AgentState:
     last_user_message = state["messages"][-1]
 
     if not last_user_message or not isinstance(last_user_message, HumanMessage):
-        state["messages"].append(
+        state["messages"] = [
             AIMessage(content="Please enter a valid number between 1 and 3.")
-        )
+        ]
         state["next_step"] = "present_options"
         return state
 
@@ -205,21 +221,21 @@ def handle_no_matches(state: AgentState) -> AgentState:
 
 
 # Create the graph
-def create_graph():
-    workflow = StateGraph(AgentState)
+def create_graph(checkpointer):
+    graph = StateGraph(AgentState)
 
     # Add nodes
-    workflow.add_node("greet", greet)
-    workflow.add_node("check_intent", check_intent)
-    workflow.add_node("search_inventory", search_inventory)
-    workflow.add_node("present_options", present_options)
-    workflow.add_node("handle_selection", handle_selection)
-    workflow.add_node("handle_non_purchase", handle_non_purchase)
-    workflow.add_node("handle_no_matches", handle_no_matches)
+    graph.add_node("greet", greet)
+    graph.add_node("check_intent", check_intent)
+    graph.add_node("search_inventory", search_inventory)
+    graph.add_node("present_options", present_options)
+    graph.add_node("handle_selection", handle_selection)
+    graph.add_node("handle_non_purchase", handle_non_purchase)
+    graph.add_node("handle_no_matches", handle_no_matches)
 
     # Add edges
-    workflow.add_edge("greet", "check_intent")
-    workflow.add_conditional_edges(
+    graph.add_edge("greet", "check_intent")
+    graph.add_conditional_edges(
         "check_intent",
         lambda x: x["next_step"],
         {
@@ -227,7 +243,7 @@ def create_graph():
             "handle_non_purchase": "handle_non_purchase",
         },
     )
-    workflow.add_conditional_edges(
+    graph.add_conditional_edges(
         "search_inventory",
         lambda x: x["next_step"],
         {
@@ -235,19 +251,42 @@ def create_graph():
             "handle_no_matches": "handle_no_matches",
         },
     )
-    workflow.add_edge("present_options", "handle_selection")
-    workflow.add_edge("handle_non_purchase", "check_intent")
-    workflow.add_edge("handle_no_matches", "check_intent")
+    graph.add_edge("present_options", "handle_selection")
+    graph.add_edge("handle_non_purchase", "check_intent")
+    graph.add_edge("handle_no_matches", "check_intent")
 
     # Add Entrypoints and Finish points
-    workflow.set_entry_point("greet")
-    workflow.set_finish_point("handle_selection")
+    graph.set_entry_point("greet")
+    graph.set_finish_point("handle_selection")
 
-    return workflow.compile()
+    agent = graph.compile(checkpointer=checkpointer)
+
+    print(agent.get_graph().draw_ascii())
+    return agent
 
 
-# Initialize the graph
-graph = create_graph()
+# # Initialize the graph
+# with ConnectionPool(
+#     conninfo=DB_URI, max_size=20, kwargs={"autocommit": True, "prepare_threshold": 0}
+# ) as pool:
+# try:
+#     display(Image(app.get_graph().draw_mermaid_png()))
+# except:
+#     # This requires some extra dependencies and is optional
+#     pass
+
+agent = None
+with ConnectionPool(
+    conninfo=DB_URI,
+    max_size=20,
+    kwargs={"autocommit": True, "prepare_threshold": 0},
+) as pool:
+    checkpointer = PostgresSaver(pool)
+    checkpointer.setup()
+
+    agent = create_graph(checkpointer)
+
+# 1) If we don't have a session_id, create a new one.
 
 
 # Flask routes
@@ -258,59 +297,68 @@ def agent():
     JSON Example:
     {
       "session_id": "...",        # optional, if not provided we create a new session
-      "user_input": "iPhone 14"   # or "1", or "y", etc. based on the conversation
+      "nessage": "iPhone 14"   # or "1", or "y", etc. based on the conversation
     }
     """
     data = request.json or {}
     message = data.get("message", "")
     session_id = data.get("session_id")
 
-    # 1) If we don't have a session_id, create a new one.
-    if not session_id:
-        session_id = str(uuid4())
+    content = "" if not session_id else HumanMessage(content=message)
 
-    # 2) Try to load existing state from Redis.
-    raw_state = redis_cli.get(session_id)
-    if raw_state:
-        print("------- FOUND EIXSTING STATE IN REDIS --------")
-        state = loads(raw_state)
-    else:
-        print("------- NEW SESSION --------")
-        # 3) If no existing state, create an initial one.
-        #    This is similar to your original code.
-        state = {
-            "messages": [
-                SystemMessage(
-                    content="You are an ecommerce assistant. Generate a friendly greeting asking what the user would like to purchase today. The conversation is via chatbox."
-                )
-            ],
-            "matches": [],
-            "selected_item": {},
-            "next_step": "greet" if not message else "check_intent",
-            "require_user_input": False,
-        }
-    state["messages"].append(HumanMessage(content=message))
-
+    # # 2) Try to load existing state from Redis.
+    # raw_state = redis_cli.get(session_id)
+    # if raw_state:
+    #     print("------- FOUND EIXSTING STATE IN REDIS --------")
+    #     state = loads(raw_state)
+    # else:
+    #     print("------- NEW SESSION --------")
+    #     # 3) If no existing state, create an initial one.
+    #     #    This is similar to your original code.
+    #     state = {
+    #         "messages": [
+    #             SystemMessage(
+    #                 content="You are an ecommerce assistant. Generate a friendly greeting asking what the user would like to purchase today. The conversation is via chatbox."
+    #             )
+    #         ],
+    #         "matches": [],
+    #         "selected_item": {},
+    #         "next_step": "greet" if not message else "check_intent",
+    #         "require_user_input": False,
+    #     }
+    # state["messages"].append(HumanMessage(content=message))
+    #
+    #
     # Run the graph
-    step_gen = graph.stream(state)
-    final_state = None
+    with ConnectionPool(
+        conninfo=DB_URI,
+        max_size=20,
+        kwargs={"autocommit": True, "prepare_threshold": 0},
+    ) as pool:
+        # 1) If we don't have a session_id, create a new one.
+        if not session_id:
+            session_id = str(uuid4())
 
-    # Consume all steps in the generator to get the final state
-    for step_state in step_gen:
-        # Each step_state will be like {"node_name": actual_state}
-        # Get the actual state from the dictionary
-        print("ENTER HERE", step_state)
-        final_state = list(step_state.values())[0]
-        if final_state["require_user_input"] is True:
-            break
+        config: RunnableConfig = {
+            "configurable": {"thread_id": session_id},
+        }
+        final_state = None
 
-    # 7) Persist the updated final state back to Redis
-    redis_cli.set(session_id, dumps(state))
+        # Consume all steps in the generator to get the final state
+        for chunk in agent.stream({"messages": [content]}, config):
+            # Each step_state will be like {"node_name": actual_state}
+            # Get the actual state from the dictionary
+            final_state = list(chunk.values())[-1]
+            print(final_state)
+            print(final_state["messages"][-1].pretty_print())
+            if final_state["require_user_input"] is True:
+                break
+
+    # # 7) Persist the updated final state back to Redis
+    # redis_cli.set(session_id, dumps(state))
 
     if not final_state:
         return jsonify({"response": "An error occurred."})
-
-    print("FINAL STATE:", final_state)
 
     # Extract the last message
     last_message = final_state["messages"][-1].content

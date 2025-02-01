@@ -1,6 +1,9 @@
 langgraph
 flask
 langchain_openai
+psycopg[binary,pool]
+psycopg-pool
+langgraph-checkpoint-postgres
 langchain
 python-dotenv
 cdp-sdk
