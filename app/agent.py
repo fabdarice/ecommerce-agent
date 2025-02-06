@@ -3,27 +3,21 @@ import json
 from uuid import uuid4
 from dotenv import load_dotenv
 
+from langchain.utils import parse_json_markdown
 from langgraph.graph import add_messages
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph import StateGraph
 from langgraph.checkpoint.postgres import PostgresSaver
-from IPython.display import Image, display
-
 from psycopg_pool import ConnectionPool
 
 
-# from langgraph.checkpoint.memory import MemorySaver
-# from langchain.load.dump import dumps
-# from langchain.load.load import loads
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from langchain.output_parsers import StructuredOutputParser, ResponseSchema
 
-# from langchain_core.messages import BaseMessage
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from langgraph.graph.message import Annotated, BaseMessage, Sequence
-
-# from app.redis_client import redis_cli
 
 _ = load_dotenv()
 
@@ -57,7 +51,7 @@ llm = ChatOpenAI(temperature=0, model="gpt-4o-mini-2024-07-18")
 def greet(state: AgentState) -> AgentState:
     print("-------------------- ENTER GREET ---------------------")
     greet_message = SystemMessage(
-        content="You are an ecommerce assistant. Generate a friendly greeting asking what the user would like to purchase today. The conversation is via chatbox."
+        content="You are an ecommerce chatbot assistant. Generate a friendly greeting asking what the user would like to purchase today."
     )
 
     response = llm.invoke([greet_message])
@@ -65,7 +59,7 @@ def greet(state: AgentState) -> AgentState:
     return {
         "messages": [response],
         "next_step": "check_intent",
-        "require_user_input": True,
+        "require_user_input": False,
         "matches": [],
         "selected_item": {},
     }
@@ -73,22 +67,38 @@ def greet(state: AgentState) -> AgentState:
 
 # Node 2: Intent Classification
 def check_intent(state: AgentState) -> AgentState:
-    # TODO: Is this -2 or -1?
     print("----------------ENTER CHECK_INTENT--------------")
-    last_user_message = state["messages"][-1].content  # Get the user's last message
-    print("LAST USER MESSAGE:", last_user_message)
+    # print(state)
+    last_message = state["messages"][-2]
+    # breakpoint()
+    # if not last_message or not isinstance(last_message, HumanMessage):
+    #     state["require_user_input"] = True
+    #     return state
+
+    # TODO: Is this -2 or -1?
+    print("LAST USER MESSAGE:", last_message.content)
 
     response = llm.invoke(
         [
+            SystemMessage(
+                content="You are an ecommerce chatbot assistant. Generate a friendly greeting asking what the user would like to purchase today."
+            ),
             AIMessage(
                 content=f"""
-        Determine if the following message is about purchasing a product or not.
-        Message: {last_user_message}
+        Determine if the following message is about a product or an intent to purchase a product or not.
+        Message: {last_message.content}
         Return only 'purchase' or 'not_purchase'.
+
+        Example: 
+        1. "I would like to buy an iPhone 14" -> "purchase"
+        2. "Iphone" -> "purchase"
+        3. "What is the weather today?" -> "not_purchase"
         """
-            )
+            ),
         ]
     )
+
+    print("INTENT RESPONSE:", response.content)
 
     if (
         not response
@@ -105,24 +115,32 @@ def check_intent(state: AgentState) -> AgentState:
 
 # Node 3: Search Inventory
 def search_inventory(state: AgentState) -> AgentState:
-    last_user_message = state["messages"][-2].content
+    print("-------------ENTER SEARCH_INVENTORY--------------")
+    last_message = state["messages"][-2]
+    print("LAST USER MESSAGE:", last_message.content)
 
     # Use LLM to search inventory
     prompt = f"""
-    Given the user query: {last_user_message}
+    Given the user query: {last_message.content}
     And the following inventory: {json.dumps(inventory)}
     Return the top 3 matching items in JSON format: [{{"name": "", "description": "", "price": "", "delivery": ""}}]
     Only return the JSON array, nothing else.
     """
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    print("PROMPT:", prompt)
 
-    if not response or not response.content or type(response.content) != dict:
+    response = llm.invoke([AIMessage(content=prompt)])
+
+    print("RESPONSE SEARCH INVENTORY:", response.content)
+
+    breakpoint()
+
+    if not response or not response.content or type(response.content) != str:
         state["next_step"] = "handle_no_matches"
         return state
 
     try:
-        matches = json.loads(response.content)
+        matches = parse_json_markdown(response.content)
         state["matches"] = matches
         state["next_step"] = "present_options" if matches else "handle_no_matches"
     except json.JSONDecodeError:
@@ -134,6 +152,7 @@ def search_inventory(state: AgentState) -> AgentState:
 
 # Node 4: Present Options
 def present_options(state: AgentState) -> AgentState:
+    print("-------------ENTER PRESENT_OPTIONS--------------")
     matches = state["matches"]
 
     prompt = f"""
@@ -143,7 +162,7 @@ def present_options(state: AgentState) -> AgentState:
     """
 
     response = llm.invoke([AIMessage(content=prompt)])
-    state["messages"].append(response)
+    state["messages"] = [response]
     state["next_step"] = "handle_selection"
     state["require_user_input"] = True
     return state
@@ -151,6 +170,7 @@ def present_options(state: AgentState) -> AgentState:
 
 # Node 5: Handle Selection
 def handle_selection(state: AgentState) -> AgentState:
+    print("-------------ENTER HANDLE_SELECTION--------------")
     last_user_message = state["messages"][-1]
 
     if not last_user_message or not isinstance(last_user_message, HumanMessage):
@@ -172,19 +192,19 @@ def handle_selection(state: AgentState) -> AgentState:
             """
 
             response = llm.invoke([AIMessage(content=prompt)])
-            state["messages"].append(response)
+            state["messages"] = [response]
             state["next_step"] = "confirm_purchase"
         else:
-            state["messages"].append(
+            state["messages"] = [
                 AIMessage(
                     content="Invalid selection. Please choose a number between 1 and 3."
                 )
-            )
+            ]
             state["next_step"] = "present_options"
     except ValueError:
-        state["messages"].append(
+        state["messages"] = [
             AIMessage(content="Please enter a valid number between 1 and 3.")
-        )
+        ]
         state["next_step"] = "present_options"
 
     return state
@@ -192,14 +212,15 @@ def handle_selection(state: AgentState) -> AgentState:
 
 # Node 6: Handle Non-Purchase Intent
 def handle_non_purchase(state: AgentState) -> AgentState:
+    print("-------------ENTER HANDLE_NON_PURCHASE--------------")
     response = llm.invoke(
         [
             AIMessage(
-                content="Generate a polite message explaining that this agent can only assist with product purchases, and ask what they would like to purchase."
+                content="Generate a message explaining that this agent can only assist with product purchases, and ask what they would like to purchase. The message format is catered for chatbot responses."
             )
         ]
     )
-    state["messages"].append(response)
+    state["messages"] = [response]
     state["next_step"] = "check_intent"
     state["require_user_input"] = True
     return state
@@ -207,14 +228,15 @@ def handle_non_purchase(state: AgentState) -> AgentState:
 
 # Node 7: Handle No Matches
 def handle_no_matches(state: AgentState) -> AgentState:
+    print("-------------ENTER HANDLE_NO_MATCHES--------------")
     response = llm.invoke(
         [
             AIMessage(
-                content="Generate a message informing the user that no matches were found and asking them what else they would like to purchase."
+                content="Generate a message informing the user that no matches were found and asking them what else they would like to purchase. The message format is catered for chatbot responses."
             )
         ]
     )
-    state["messages"].append(response)
+    state["messages"] = [response]
     state["next_step"] = "check_intent"
     state["require_user_input"] = True
     return state
@@ -259,34 +281,24 @@ def create_graph(checkpointer):
     graph.set_entry_point("greet")
     graph.set_finish_point("handle_selection")
 
-    agent = graph.compile(checkpointer=checkpointer)
+    agent_bot = graph.compile(checkpointer=checkpointer)
 
-    print(agent.get_graph().draw_ascii())
-    return agent
+    print(agent_bot.get_graph().draw_ascii())
+    return agent_bot
 
 
-# # Initialize the graph
-# with ConnectionPool(
-#     conninfo=DB_URI, max_size=20, kwargs={"autocommit": True, "prepare_threshold": 0}
-# ) as pool:
-# try:
-#     display(Image(app.get_graph().draw_mermaid_png()))
-# except:
-#     # This requires some extra dependencies and is optional
-#     pass
-
-agent = None
-with ConnectionPool(
+# Initialize the connection pool globally.
+pool = ConnectionPool(
     conninfo=DB_URI,
     max_size=20,
     kwargs={"autocommit": True, "prepare_threshold": 0},
-) as pool:
-    checkpointer = PostgresSaver(pool)
-    checkpointer.setup()
+)
 
-    agent = create_graph(checkpointer)
+checkpointer = PostgresSaver(pool)
+checkpointer.setup()
 
-# 1) If we don't have a session_id, create a new one.
+# Create the agent bot only once.
+agent_bot = create_graph(checkpointer)
 
 
 # Flask routes
@@ -300,63 +312,31 @@ def agent():
       "nessage": "iPhone 14"   # or "1", or "y", etc. based on the conversation
     }
     """
+
+    if agent_bot is None:
+        return jsonify({"response": "An error occurred."})
     data = request.json or {}
     message = data.get("message", "")
     session_id = data.get("session_id")
 
     content = "" if not session_id else HumanMessage(content=message)
 
-    # # 2) Try to load existing state from Redis.
-    # raw_state = redis_cli.get(session_id)
-    # if raw_state:
-    #     print("------- FOUND EIXSTING STATE IN REDIS --------")
-    #     state = loads(raw_state)
-    # else:
-    #     print("------- NEW SESSION --------")
-    #     # 3) If no existing state, create an initial one.
-    #     #    This is similar to your original code.
-    #     state = {
-    #         "messages": [
-    #             SystemMessage(
-    #                 content="You are an ecommerce assistant. Generate a friendly greeting asking what the user would like to purchase today. The conversation is via chatbox."
-    #             )
-    #         ],
-    #         "matches": [],
-    #         "selected_item": {},
-    #         "next_step": "greet" if not message else "check_intent",
-    #         "require_user_input": False,
-    #     }
-    # state["messages"].append(HumanMessage(content=message))
+    if not session_id:
+        session_id = str(uuid4())
     #
+    config: RunnableConfig = {
+        "configurable": {"thread_id": session_id},
+    }
+
+    # checkpoint = checkpointer.get(config)
+    # print("CHECKPOINT:", checkpoint)
+    final_state = None
+    for chunk in agent_bot.stream({"messages": [content]}, config):
+        final_state = list(chunk.values())[-1]
+        print(final_state["messages"][-1].pretty_print())
+        if final_state["require_user_input"] is True:
+            break
     #
-    # Run the graph
-    with ConnectionPool(
-        conninfo=DB_URI,
-        max_size=20,
-        kwargs={"autocommit": True, "prepare_threshold": 0},
-    ) as pool:
-        # 1) If we don't have a session_id, create a new one.
-        if not session_id:
-            session_id = str(uuid4())
-
-        config: RunnableConfig = {
-            "configurable": {"thread_id": session_id},
-        }
-        final_state = None
-
-        # Consume all steps in the generator to get the final state
-        for chunk in agent.stream({"messages": [content]}, config):
-            # Each step_state will be like {"node_name": actual_state}
-            # Get the actual state from the dictionary
-            final_state = list(chunk.values())[-1]
-            print(final_state)
-            print(final_state["messages"][-1].pretty_print())
-            if final_state["require_user_input"] is True:
-                break
-
-    # # 7) Persist the updated final state back to Redis
-    # redis_cli.set(session_id, dumps(state))
-
     if not final_state:
         return jsonify({"response": "An error occurred."})
 
