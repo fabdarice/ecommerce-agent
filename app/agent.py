@@ -1,19 +1,18 @@
-from typing import Dict, List, TypedDict
+from pydantic import BaseModel, ValidationError
+from typing import List, Literal, Optional, TypedDict
 import json
 from uuid import uuid4
 from dotenv import load_dotenv
 
-from langchain.utils import parse_json_markdown
 from langgraph.graph import add_messages
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph import StateGraph
 from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg_pool import ConnectionPool
-
-
+from langchain_core.load.dump import dumps
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langchain.output_parsers import StructuredOutputParser, ResponseSchema
+from langchain.output_parsers import PydanticOutputParser
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -29,6 +28,29 @@ CORS(app)
 DB_URI = "postgresql://fabda@localhost:5432/agentshop?sslmode=disable"
 
 
+class IntentResponse(BaseModel):
+    intent: str
+
+
+class Inventory(BaseModel):
+    name: str
+    description: str
+    price: str
+    delivery: str
+
+
+class SearchInventoryResponse(BaseModel):
+    matches: List[Inventory]
+
+
+class InventorySelectionResponse(BaseModel):
+    selection: int
+
+
+class SelectionConfirmationResponse(BaseModel):
+    selection: Literal["Y", "N", "y", "n"]
+
+
 # Load inventory data
 with open("app/inventory.json", "r") as f:
     inventory = json.load(f)
@@ -37,8 +59,8 @@ with open("app/inventory.json", "r") as f:
 # Define state type
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
-    matches: List[Dict]
-    selected_item: Dict
+    matches: List[Inventory]
+    selected_item: Optional[Inventory]
     next_step: str
     require_user_input: bool
 
@@ -50,6 +72,17 @@ llm = ChatOpenAI(temperature=0, model="gpt-4o-mini-2024-07-18")
 # Node 1: Greeting
 def greet(state: AgentState) -> AgentState:
     print("-------------------- ENTER GREET ---------------------")
+
+    # Check if a human response has already been provided.
+    if (
+        state["messages"]
+        and isinstance(state["messages"][-1], HumanMessage)
+        and state["messages"][-1].content != ""
+    ):
+        state["next_step"] = "check_intent"
+        state["require_user_input"] = False
+        return state
+
     greet_message = SystemMessage(
         content="You are an ecommerce chatbot assistant. Generate a friendly greeting asking what the user would like to purchase today."
     )
@@ -59,24 +92,18 @@ def greet(state: AgentState) -> AgentState:
     return {
         "messages": [response],
         "next_step": "check_intent",
-        "require_user_input": False,
+        "require_user_input": True,
         "matches": [],
-        "selected_item": {},
+        "selected_item": None,
     }
 
 
 # Node 2: Intent Classification
 def check_intent(state: AgentState) -> AgentState:
     print("----------------ENTER CHECK_INTENT--------------")
-    # print(state)
-    last_message = state["messages"][-2]
-    # breakpoint()
-    # if not last_message or not isinstance(last_message, HumanMessage):
-    #     state["require_user_input"] = True
-    #     return state
-
-    # TODO: Is this -2 or -1?
+    last_message = state["messages"][-1]
     print("LAST USER MESSAGE:", last_message.content)
+    pydantic_parser = PydanticOutputParser(pydantic_object=IntentResponse)
 
     response = llm.invoke(
         [
@@ -85,31 +112,28 @@ def check_intent(state: AgentState) -> AgentState:
             ),
             AIMessage(
                 content=f"""
-        Determine if the following message is about a product or an intent to purchase a product or not.
-        Message: {last_message.content}
-        Return only 'purchase' or 'not_purchase'.
-
-        Example: 
-        1. "I would like to buy an iPhone 14" -> "purchase"
-        2. "Iphone" -> "purchase"
-        3. "What is the weather today?" -> "not_purchase"
-        """
+                    Determine if the following message is about a product or an intent to purchase a product or not.
+                    Message: {last_message.content}
+                    Return only 'purchase' or 'not_purchase' in the following format {pydantic_parser.get_format_instructions()}.
+                """
             ),
         ]
     )
 
-    print("INTENT RESPONSE:", response.content)
+    try:
+        if type(response.content) != str:
+            state["next_step"] = "handle_non_purchase"
+            return state
 
-    if (
-        not response
-        or not response.content
-        or type(response.content) != str
-        or response.content.strip() == "not_purchase"
-    ):
+        parsed_output = pydantic_parser.parse(response.content)
+        if parsed_output.intent == "purchase":
+            state["next_step"] = "search_inventory"
+        else:
+            state["next_step"] = "handle_non_purchase"
+    except ValidationError as e:
+        print("Validation error:", e)
         state["next_step"] = "handle_non_purchase"
-        return state
 
-    state["next_step"] = "search_inventory"
     return state
 
 
@@ -119,33 +143,30 @@ def search_inventory(state: AgentState) -> AgentState:
     last_message = state["messages"][-2]
     print("LAST USER MESSAGE:", last_message.content)
 
+    pydantic_parser = PydanticOutputParser(pydantic_object=SearchInventoryResponse)
+
     # Use LLM to search inventory
     prompt = f"""
-    Given the user query: {last_message.content}
-    And the following inventory: {json.dumps(inventory)}
-    Return the top 3 matching items in JSON format: [{{"name": "", "description": "", "price": "", "delivery": ""}}]
-    Only return the JSON array, nothing else.
+        Given the user query: {last_message.content}
+        And the following inventory: {json.dumps(inventory)}
+        Return up to 3 matching items in the following format: {pydantic_parser.get_format_instructions()}.
+        Only return the items that match the user query by matching on the name or description.
     """
 
-    print("PROMPT:", prompt)
-
     response = llm.invoke([AIMessage(content=prompt)])
-
-    print("RESPONSE SEARCH INVENTORY:", response.content)
-
-    breakpoint()
 
     if not response or not response.content or type(response.content) != str:
         state["next_step"] = "handle_no_matches"
         return state
 
     try:
-        matches = parse_json_markdown(response.content)
+        matches = pydantic_parser.parse(response.content).matches
         state["matches"] = matches
         state["next_step"] = "present_options" if matches else "handle_no_matches"
-    except json.JSONDecodeError:
-        state["matches"] = []
+        state["messages"] = [response]
+    except Exception:
         state["next_step"] = "handle_no_matches"
+        state["matches"] = []
 
     return state
 
@@ -153,11 +174,17 @@ def search_inventory(state: AgentState) -> AgentState:
 # Node 4: Present Options
 def present_options(state: AgentState) -> AgentState:
     print("-------------ENTER PRESENT_OPTIONS--------------")
+    # Check if a human response has already been provided.
+    if state["messages"] and isinstance(state["messages"][-1], HumanMessage):
+        state["next_step"] = "handle_selection"
+        state["require_user_input"] = False
+        return state
+
     matches = state["matches"]
 
     prompt = f"""
-    Present these product matches to the user and ask them to select one by number (1-3):
-    {json.dumps(matches)}
+    Present these product matches to the user and ask them to select one by number (1-{len(state['matches'])}):
+    {dumps(matches)}
     Format the response nicely with prices and descriptions.
     """
 
@@ -175,35 +202,56 @@ def handle_selection(state: AgentState) -> AgentState:
 
     if not last_user_message or not isinstance(last_user_message, HumanMessage):
         state["messages"] = [
-            AIMessage(content="Please enter a valid number between 1 and 3.")
+            AIMessage(
+                content=f"Please enter a valid number between 1 and {len(state['matches'])}."
+            )
         ]
         state["next_step"] = "present_options"
         return state
 
     try:
-        selection = int(last_user_message.content) - 1
-        if 0 <= selection < len(state["matches"]):
-            state["selected_item"] = state["matches"][selection]
+        pydantic_parser = PydanticOutputParser(
+            pydantic_object=InventorySelectionResponse
+        )
+        prompt = f"""
+            You have presented three options to the user {dumps(state['matches'])}.
+            Extract the number selected by the user from the following message {last_user_message.content}
+            Format the response with the following format {pydantic_parser.get_format_instructions()}.
+        """
+        response = llm.invoke([AIMessage(content=prompt)])
+        if type(response.content) != str:
+            raise Exception("Response content is not a string.")
 
+        selection = pydantic_parser.parse(response.content).selection
+        if 0 < selection <= len(state["matches"]):
+            state["selected_item"] = state["matches"][selection - 1]
+
+            pydantic_parser = PydanticOutputParser(
+                pydantic_object=SelectionConfirmationResponse
+            )
             prompt = f"""
-            Ask the user to confirm their selection of:
-            {json.dumps(state["selected_item"])}
-            Ask them to respond with Y or N.
+            The user has selected the following item: {dumps(state["selected_item"])}.
+            Ask the user to confirm their selection by responding with Y or N.
+            Format the response with the following format {pydantic_parser.get_format_instructions()}.
             """
 
             response = llm.invoke([AIMessage(content=prompt)])
-            state["messages"] = [response]
-            state["next_step"] = "confirm_purchase"
+
+            if type(response.content) != str:
+                raise Exception("Response content is not a string.")
+
+            confirmation = pydantic_parser.parse(response.content).selection
+            if confirmation.lower() == "y":
+                state["next_step"] = "purchase_item_onchain"
+            else:
+                state["next_step"] = "present_options"
         else:
-            state["messages"] = [
-                AIMessage(
-                    content="Invalid selection. Please choose a number between 1 and 3."
-                )
-            ]
-            state["next_step"] = "present_options"
-    except ValueError:
+            raise Exception("Number invalid.")
+    except Exception:
         state["messages"] = [
-            AIMessage(content="Please enter a valid number between 1 and 3.")
+            AIMessage(
+                content=f"Please enter a valid number between 1 and {len(state['matches'])}."
+            )
         ]
         state["next_step"] = "present_options"
 
@@ -242,6 +290,12 @@ def handle_no_matches(state: AgentState) -> AgentState:
     return state
 
 
+# Node 8: Purchase Item Onchain via CB Commerce
+def purchase_item_onchain(state: AgentState) -> AgentState:
+    print("-------------ENTER PURCHASE_ITEM_ONCHAIN--------------")
+    return state
+
+
 # Create the graph
 def create_graph(checkpointer):
     graph = StateGraph(AgentState)
@@ -254,6 +308,7 @@ def create_graph(checkpointer):
     graph.add_node("handle_selection", handle_selection)
     graph.add_node("handle_non_purchase", handle_non_purchase)
     graph.add_node("handle_no_matches", handle_no_matches)
+    graph.add_node("purchase_item_onchain", purchase_item_onchain)
 
     # Add edges
     graph.add_edge("greet", "check_intent")
@@ -273,13 +328,21 @@ def create_graph(checkpointer):
             "handle_no_matches": "handle_no_matches",
         },
     )
+    graph.add_conditional_edges(
+        "handle_selection",
+        lambda x: x["next_step"],
+        {
+            "present_options": "present_options",
+            "purchase_item_onchain": "purchase_item_onchain",
+        },
+    )
     graph.add_edge("present_options", "handle_selection")
     graph.add_edge("handle_non_purchase", "check_intent")
     graph.add_edge("handle_no_matches", "check_intent")
 
     # Add Entrypoints and Finish points
     graph.set_entry_point("greet")
-    graph.set_finish_point("handle_selection")
+    graph.set_finish_point("purchase_item_onchain")
 
     agent_bot = graph.compile(checkpointer=checkpointer)
 
@@ -342,16 +405,21 @@ def agent():
 
     # Extract the last message
     last_message = final_state["messages"][-1].content
+    print("EXIT API RESPONSE", final_state)
 
     return jsonify(
         {
             "response": last_message,
             "session_id": session_id,
-            "state": {
-                "matches": final_state["matches"],
-                "selected_item": final_state["selected_item"],
-                "next_step": final_state["next_step"],
-            },
+            # "state": {
+            #     "matches": final_state["matches"],
+            #     "selected_item": (
+            #         final_state["selected_item"]
+            #         if "selected_item" in final_state
+            #         else None
+            #     ),
+            #     "next_step": final_state["next_step"],
+            # },
         }
     )
 
