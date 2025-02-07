@@ -937,3 +937,28 @@ TRANSFER_ABI = [
     },
     {"stateMutability": "payable", "type": "receive"},
 ]
+
+
+ERC20_ABI = [
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "owner", "type": "address"},
+            {"name": "spender", "type": "address"},
+        ],
+        "name": "allowance",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function",
+        "stateMutability": "view",
+    },
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "spender", "type": "address"},
+            {"name": "value", "type": "uint256"},
+        ],
+        "name": "approve",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function",
+    },
+]

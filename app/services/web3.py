@@ -2,8 +2,13 @@ from typing import List, Dict, Any
 import os
 
 from cdp import Cdp, Wallet
+from cdp.smart_contract import SmartContract
 
-from app.utils.abi import TRANSFER_ABI
+
+from app.utils.abi import TRANSFER_ABI, ERC20_ABI
+
+USDC_CONTRACT_ADDRESS = "0x833589FCD6EDB6E08F4C7C32D4F71B54BDA02913"
+TRANSFERS_CONTRACT = "0x03059433BCdB6144624cC2443159D9445C32b7a8"
 
 
 class Web3:
@@ -21,6 +26,7 @@ class Web3:
             print("Loading existing wallet")
             self.wallet = Wallet.fetch(wallet_id)
             self.wallet.load_seed(".seed.json")
+            self.approve_unlimited_usdc()
         else:
             print("Creating new wallet")
             self.wallet = Wallet.create(network_id="base-mainnet")
@@ -49,3 +55,27 @@ class Web3:
             method="transferTokenPreApproved",
             args=args,
         )
+
+    def approve_unlimited_usdc(self) -> None:
+        allowance = SmartContract.read(
+            "base-mainnet",
+            USDC_CONTRACT_ADDRESS,
+            "allowance",
+            ERC20_ABI,
+            {"owner": self.address, "spender": TRANSFERS_CONTRACT},
+        )
+        allowance = int(allowance)  # type: ignore
+
+        if allowance == 0:
+            print("Current allowance is 0. Approving unlimited USDC spending...")
+            max_uint256 = "100000000000000000000000000"
+            tx = self.wallet.invoke_contract(
+                contract_address=USDC_CONTRACT_ADDRESS,
+                abi=ERC20_ABI,
+                method="approve",
+                args={"spender": TRANSFERS_CONTRACT, "value": max_uint256},
+            )
+            print("Approval transaction sent:", tx)
+        else:
+            print("Allowance is already non-zero. No approval needed.")
+            return None

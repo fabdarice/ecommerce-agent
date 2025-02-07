@@ -101,7 +101,7 @@ class CommerceService:
             "name": item.name,
             "description": item.description,
             "pricing_type": "fixed_price",
-            "local_price": {"amount": item.price, "currency": "usd"},
+            "local_price": {"amount": str(float(item.price) / 100), "currency": "usd"},
         }
 
         try:
