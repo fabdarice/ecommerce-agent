@@ -417,6 +417,8 @@ def agent():
         {
             "response": response_message,
             "session_id": session_id,
+            "address": web3.address,
+            "balance": web3.balances("usdc"),
             # "state": {
             #     "matches": final_state["matches"],
             #     "selected_item": (
