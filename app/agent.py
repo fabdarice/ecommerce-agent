@@ -20,6 +20,9 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from langgraph.graph.message import Annotated, BaseMessage, Sequence
 
+from app.services.commerce import CommerceService, TransferIntent
+from app.services.web3 import Web3
+
 
 _ = load_dotenv()
 
@@ -71,6 +74,10 @@ class AgentState(TypedDict):
 # Initialize LLM
 llm = ChatOpenAI(temperature=0, model="gpt-4o-mini-2024-07-18")
 
+commerce_svc = CommerceService()
+
+web3 = Web3()
+
 
 # Node 1: Greeting
 def greet(state: AgentState) -> AgentState:
@@ -91,7 +98,6 @@ def check_intent(state: AgentState) -> AgentState:
     state["user_input"] = interrupt(
         "Hello there! Welcome to AgentShop. I’m here to help you find the perfect item. What would you like to purchase today?."
     )
-    print("LAST USER MESSAGE:", state["user_input"])
     pydantic_parser = PydanticOutputParser(pydantic_object=IntentResponse)
 
     response = llm.invoke(
@@ -213,8 +219,12 @@ def handle_selection(state: AgentState) -> AgentState:
 
 def handle_selection_confirmation(state: AgentState):
     print("-------------ENTER HANDLE_SELECTION CONFIRMATION --------------")
+    if not state["selected_item"]:
+        state["next_step"] = "present_options"
+        return state
+
     user_selection_input = interrupt(
-        f"You have selected {dumps(state['selected_item'])}. Please confirm Y or N."
+        f"You have selected {state['selected_item'].name}. Please confirm Y or N."
     )
 
     try:
@@ -270,6 +280,25 @@ def handle_no_matches(state: AgentState) -> AgentState:
 # Node 8: Purchase Item Onchain via CB Commerce
 def purchase_item_onchain(state: AgentState) -> AgentState:
     print("-------------ENTER PURCHASE_ITEM_ONCHAIN--------------")
+    charge_id: str = commerce_svc.create_charge(state["selected_item"])
+    transfer_intent: TransferIntent = commerce_svc.transact_onchain(
+        charge_id, web3.address
+    )
+    print(f"Transfer Intent: {transfer_intent}")
+    tx = web3.invoke_transfers_contract(
+        transfer_intent.metadata.contract_address,
+        transfer_intent.to_onchain_params,
+    )
+    print(f"Submitting Transaction Onchain: {tx}")
+    tx.wait()
+    print(
+        f"Payment Complete. Receipt: https://commerce.coinbase.com/pay/{charge_id}/receipt"
+    )
+    state["messages"] = [
+        AIMessage(
+            f"Payment Complete. Receipt: https://commerce.coinbase.com/pay/{charge_id}/receipt"
+        )
+    ]
     return state
 
 
@@ -374,13 +403,9 @@ def agent():
     config: RunnableConfig = {
         "configurable": {"thread_id": session_id},
     }
-
-    # checkpoint = checkpointer.get(config)
-    # print("CHECKPOINT:", checkpoint)
     response_message = ""
     for chunk in agent_bot.stream(stream_content, config):
         if "__interrupt__" in chunk:
-            print("INTERRUPT:", chunk["__interrupt__"])
             response_message = chunk["__interrupt__"][0].value
         else:
             final_state = list(chunk.values())[-1]

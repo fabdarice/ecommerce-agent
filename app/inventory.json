@@ -1,34 +1,58 @@
 {
   "products": [
     {
-      "name": "Premium Wireless Headphones",
-      "description": "High-quality wireless headphones with noise cancellation and 30-hour battery life",
-      "price": 199.99,
-      "delivery": "2-3 business days"
-    },
-    {
-      "name": "Smart Fitness Watch",
-      "description": "Water-resistant fitness tracker with heart rate monitoring and sleep tracking",
-      "price": 149.99,
-      "delivery": "1-2 business days"
-    },
-    {
-      "name": "4K Ultra HD Smart TV",
-      "description": "55-inch 4K Smart TV with HDR and built-in streaming apps",
-      "price": 699.99,
+      "name": "Coinbase Hat - Basic Edition",
+      "description": "A stylish Coinbase Hat with a minimalist design perfect for everyday wear.",
+      "price": 19.99,
       "delivery": "5-7 business days"
     },
     {
-      "name": "Laptop Backpack",
-      "description": "Water-resistant backpack with USB charging port and laptop compartment",
-      "price": 49.99,
-      "delivery": "2-3 business days"
+      "name": "Coinbase Hat - Classic Edition",
+      "description": "Premium Coinbase Hat featuring embroidered logo details for a refined look.",
+      "price": 24.99,
+      "delivery": "3-4 business days"
     },
     {
-      "name": "Coffee Maker",
-      "description": "Programmable coffee maker with 12-cup capacity and auto-shutoff",
-      "price": 79.99,
+      "name": "Coinbase Hat - Limited Edition",
+      "description": "Exclusive Coinbase Hat with limited release design and enhanced materials.",
+      "price": 29.99,
+      "delivery": "1-2 business days"
+    },
+    {
+      "name": "Coinbase Sweater - Basic Edition",
+      "description": "Comfortable Coinbase Sweater with a classic logo design, perfect for casual days.",
+      "price": 39.99,
+      "delivery": "5-7 business days"
+    },
+    {
+      "name": "Coinbase Sweater - Classic Edition",
+      "description": "Stylish Coinbase Sweater made with quality fabric and detailed logo embroidery.",
+      "price": 44.99,
       "delivery": "3-4 business days"
+    },
+    {
+      "name": "Coinbase Sweater - Premium Edition",
+      "description": "Luxurious Coinbase Sweater crafted from premium materials with an exclusive design.",
+      "price": 49.99,
+      "delivery": "1-2 business days"
+    },
+    {
+      "name": "Coinbase Mug - Standard Edition",
+      "description": "Durable Coinbase Mug with subtle branding, ideal for your daily coffee routine.",
+      "price": 9.99,
+      "delivery": "5-7 business days"
+    },
+    {
+      "name": "Coinbase Mug - Deluxe Edition",
+      "description": "High-quality Coinbase Mug featuring a sleek design and superior finish.",
+      "price": 12.99,
+      "delivery": "3-4 business days"
+    },
+    {
+      "name": "Coinbase Mug - Collector's Edition",
+      "description": "Exclusive Coinbase Mug with a collectible design and premium materials.",
+      "price": 15.99,
+      "delivery": "1-2 business days"
     }
   ]
 }
