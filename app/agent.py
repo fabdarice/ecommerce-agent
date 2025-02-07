@@ -1,3 +1,5 @@
+from langgraph.graph.state import Command
+from langgraph.types import Interrupt, interrupt
 from pydantic import BaseModel, ValidationError
 from typing import List, Literal, Optional, TypedDict
 import json
@@ -17,6 +19,7 @@ from langchain.output_parsers import PydanticOutputParser
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from langgraph.graph.message import Annotated, BaseMessage, Sequence
+
 
 _ = load_dotenv()
 
@@ -59,10 +62,10 @@ with open("app/inventory.json", "r") as f:
 # Define state type
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
+    user_input: str
     matches: List[Inventory]
     selected_item: Optional[Inventory]
     next_step: str
-    require_user_input: bool
 
 
 # Initialize LLM
@@ -73,26 +76,10 @@ llm = ChatOpenAI(temperature=0, model="gpt-4o-mini-2024-07-18")
 def greet(state: AgentState) -> AgentState:
     print("-------------------- ENTER GREET ---------------------")
 
-    # Check if a human response has already been provided.
-    if (
-        state["messages"]
-        and isinstance(state["messages"][-1], HumanMessage)
-        and state["messages"][-1].content != ""
-    ):
-        state["next_step"] = "check_intent"
-        state["require_user_input"] = False
-        return state
-
-    greet_message = SystemMessage(
-        content="You are an ecommerce chatbot assistant. Generate a friendly greeting asking what the user would like to purchase today."
-    )
-
-    response = llm.invoke([greet_message])
-
     return {
-        "messages": [response],
+        "messages": [],
+        "user_input": "",
         "next_step": "check_intent",
-        "require_user_input": True,
         "matches": [],
         "selected_item": None,
     }
@@ -101,8 +88,10 @@ def greet(state: AgentState) -> AgentState:
 # Node 2: Intent Classification
 def check_intent(state: AgentState) -> AgentState:
     print("----------------ENTER CHECK_INTENT--------------")
-    last_message = state["messages"][-1]
-    print("LAST USER MESSAGE:", last_message.content)
+    state["user_input"] = interrupt(
+        "Hello there! Welcome to AgentShop. I’m here to help you find the perfect item. What would you like to purchase today?."
+    )
+    print("LAST USER MESSAGE:", state["user_input"])
     pydantic_parser = PydanticOutputParser(pydantic_object=IntentResponse)
 
     response = llm.invoke(
@@ -113,7 +102,7 @@ def check_intent(state: AgentState) -> AgentState:
             AIMessage(
                 content=f"""
                     Determine if the following message is about a product or an intent to purchase a product or not.
-                    Message: {last_message.content}
+                    Message: {state['user_input']}
                     Return only 'purchase' or 'not_purchase' in the following format {pydantic_parser.get_format_instructions()}.
                 """
             ),
@@ -140,14 +129,12 @@ def check_intent(state: AgentState) -> AgentState:
 # Node 3: Search Inventory
 def search_inventory(state: AgentState) -> AgentState:
     print("-------------ENTER SEARCH_INVENTORY--------------")
-    last_message = state["messages"][-2]
-    print("LAST USER MESSAGE:", last_message.content)
 
     pydantic_parser = PydanticOutputParser(pydantic_object=SearchInventoryResponse)
 
     # Use LLM to search inventory
     prompt = f"""
-        Given the user query: {last_message.content}
+        Given the user query: {state['user_input']}
         And the following inventory: {json.dumps(inventory)}
         Return up to 3 matching items in the following format: {pydantic_parser.get_format_instructions()}.
         Only return the items that match the user query by matching on the name or description.
@@ -174,11 +161,6 @@ def search_inventory(state: AgentState) -> AgentState:
 # Node 4: Present Options
 def present_options(state: AgentState) -> AgentState:
     print("-------------ENTER PRESENT_OPTIONS--------------")
-    # Check if a human response has already been provided.
-    if state["messages"] and isinstance(state["messages"][-1], HumanMessage):
-        state["next_step"] = "handle_selection"
-        state["require_user_input"] = False
-        return state
 
     matches = state["matches"]
 
@@ -191,7 +173,6 @@ def present_options(state: AgentState) -> AgentState:
     response = llm.invoke([AIMessage(content=prompt)])
     state["messages"] = [response]
     state["next_step"] = "handle_selection"
-    state["require_user_input"] = True
     return state
 
 
@@ -199,15 +180,7 @@ def present_options(state: AgentState) -> AgentState:
 def handle_selection(state: AgentState) -> AgentState:
     print("-------------ENTER HANDLE_SELECTION--------------")
     last_user_message = state["messages"][-1]
-
-    if not last_user_message or not isinstance(last_user_message, HumanMessage):
-        state["messages"] = [
-            AIMessage(
-                content=f"Please enter a valid number between 1 and {len(state['matches'])}."
-            )
-        ]
-        state["next_step"] = "present_options"
-        return state
+    user_selection_input = interrupt(last_user_message.content)
 
     try:
         pydantic_parser = PydanticOutputParser(
@@ -215,7 +188,7 @@ def handle_selection(state: AgentState) -> AgentState:
         )
         prompt = f"""
             You have presented three options to the user {dumps(state['matches'])}.
-            Extract the number selected by the user from the following message {last_user_message.content}
+            Extract the number selected by the user from the following message {user_selection_input}.
             Format the response with the following format {pydantic_parser.get_format_instructions()}.
         """
         response = llm.invoke([AIMessage(content=prompt)])
@@ -225,26 +198,30 @@ def handle_selection(state: AgentState) -> AgentState:
         selection = pydantic_parser.parse(response.content).selection
         if 0 < selection <= len(state["matches"]):
             state["selected_item"] = state["matches"][selection - 1]
-
-            pydantic_parser = PydanticOutputParser(
-                pydantic_object=SelectionConfirmationResponse
+        else:
+            raise Exception("Number invalid.")
+    except Exception:
+        state["messages"] = [
+            AIMessage(
+                content=f"Please enter a valid number between 1 and {len(state['matches'])}."
             )
-            prompt = f"""
-            The user has selected the following item: {dumps(state["selected_item"])}.
-            Ask the user to confirm their selection by responding with Y or N.
-            Format the response with the following format {pydantic_parser.get_format_instructions()}.
-            """
+        ]
+        state["next_step"] = "present_options"
 
-            response = llm.invoke([AIMessage(content=prompt)])
+    return state
 
-            if type(response.content) != str:
-                raise Exception("Response content is not a string.")
 
-            confirmation = pydantic_parser.parse(response.content).selection
-            if confirmation.lower() == "y":
-                state["next_step"] = "purchase_item_onchain"
-            else:
-                state["next_step"] = "present_options"
+def handle_selection_confirmation(state: AgentState):
+    print("-------------ENTER HANDLE_SELECTION CONFIRMATION --------------")
+    user_selection_input = interrupt(
+        f"You have selected {dumps(state['selected_item'])}. Please confirm Y or N."
+    )
+
+    try:
+        if user_selection_input.lower() == "y":
+            state["next_step"] = "purchase_item_onchain"
+        elif user_selection_input.lower() == "n":
+            state["next_step"] = "present_options"
         else:
             raise Exception("Number invalid.")
     except Exception:
@@ -270,7 +247,7 @@ def handle_non_purchase(state: AgentState) -> AgentState:
     )
     state["messages"] = [response]
     state["next_step"] = "check_intent"
-    state["require_user_input"] = True
+    # state["require_user_input"] = True
     return state
 
 
@@ -286,7 +263,7 @@ def handle_no_matches(state: AgentState) -> AgentState:
     )
     state["messages"] = [response]
     state["next_step"] = "check_intent"
-    state["require_user_input"] = True
+    # state["require_user_input"] = True
     return state
 
 
@@ -306,6 +283,7 @@ def create_graph(checkpointer):
     graph.add_node("search_inventory", search_inventory)
     graph.add_node("present_options", present_options)
     graph.add_node("handle_selection", handle_selection)
+    graph.add_node("handle_selection_confirmation", handle_selection_confirmation)
     graph.add_node("handle_non_purchase", handle_non_purchase)
     graph.add_node("handle_no_matches", handle_no_matches)
     graph.add_node("purchase_item_onchain", purchase_item_onchain)
@@ -329,7 +307,7 @@ def create_graph(checkpointer):
         },
     )
     graph.add_conditional_edges(
-        "handle_selection",
+        "handle_selection_confirmation",
         lambda x: x["next_step"],
         {
             "present_options": "present_options",
@@ -337,6 +315,7 @@ def create_graph(checkpointer):
         },
     )
     graph.add_edge("present_options", "handle_selection")
+    graph.add_edge("handle_selection", "handle_selection_confirmation")
     graph.add_edge("handle_non_purchase", "check_intent")
     graph.add_edge("handle_no_matches", "check_intent")
 
@@ -357,7 +336,8 @@ pool = ConnectionPool(
     kwargs={"autocommit": True, "prepare_threshold": 0},
 )
 
-checkpointer = PostgresSaver(pool)
+
+checkpointer = PostgresSaver(pool)  # type: ignore
 checkpointer.setup()
 
 # Create the agent bot only once.
@@ -382,7 +362,11 @@ def agent():
     message = data.get("message", "")
     session_id = data.get("session_id")
 
-    content = "" if not session_id else HumanMessage(content=message)
+    stream_content = (
+        {"messages": HumanMessage(content="")}
+        if not session_id or session_id == ""
+        else Command(resume=message)
+    )
 
     if not session_id:
         session_id = str(uuid4())
@@ -393,23 +377,20 @@ def agent():
 
     # checkpoint = checkpointer.get(config)
     # print("CHECKPOINT:", checkpoint)
-    final_state = None
-    for chunk in agent_bot.stream({"messages": [content]}, config):
-        final_state = list(chunk.values())[-1]
-        print(final_state["messages"][-1].pretty_print())
-        if final_state["require_user_input"] is True:
-            break
-    #
-    if not final_state:
-        return jsonify({"response": "An error occurred."})
-
-    # Extract the last message
-    last_message = final_state["messages"][-1].content
-    print("EXIT API RESPONSE", final_state)
+    response_message = ""
+    for chunk in agent_bot.stream(stream_content, config):
+        if "__interrupt__" in chunk:
+            print("INTERRUPT:", chunk["__interrupt__"])
+            response_message = chunk["__interrupt__"][0].value
+        else:
+            final_state = list(chunk.values())[-1]
+            if final_state["messages"]:
+                print(final_state["messages"][-1].pretty_print())
+                response_message = final_state["messages"][-1].content
 
     return jsonify(
         {
-            "response": last_message,
+            "response": response_message,
             "session_id": session_id,
             # "state": {
             #     "matches": final_state["matches"],
