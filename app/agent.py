@@ -43,6 +43,7 @@ class Inventory(BaseModel):
     description: str
     price: str
     delivery: str
+    url: str
 
 
 class SearchInventoryResponse(BaseModel):
@@ -171,9 +172,20 @@ def present_options(state: AgentState) -> AgentState:
     matches = state["matches"]
 
     prompt = f"""
-    Present these product matches to the user and ask them to select one by number (1-{len(state['matches'])}):
+You are given a list of product options. Your task is to present these options to the user in a nicely formatted manner that can be rendered by our front end. For each product, include the following details:
+- **Name**
+- **Price**
+- **Delivery** details
+- **Image URL** (use a placeholder or real URL if available)
+
+After listing the products, prompt the user to select one by entering the corresponding number (1-{len(state['matches'])}).
+
+Please format your response using Markdown.
+
+Here are the product options:
     {dumps(matches)}
-    Format the response nicely with prices and descriptions.
+
+Now, generate a response that lists these options formatted in Markdown and asks the user to select one by number (1-3).
     """
 
     response = llm.invoke([AIMessage(content=prompt)])
@@ -224,7 +236,7 @@ def handle_selection_confirmation(state: AgentState):
         return state
 
     user_selection_input = interrupt(
-        f"You have selected {state['selected_item'].name}. Please confirm Y or N."
+        f"You have chosen '{state['selected_item'].name}'. Would you like to confirm your selection?\n\nPlease reply with 'Y' for Yes or 'N' for No."
     )
 
     try:
@@ -296,7 +308,11 @@ def purchase_item_onchain(state: AgentState) -> AgentState:
     )
     state["messages"] = [
         AIMessage(
-            f"Payment Complete. Receipt: https://commerce.coinbase.com/pay/{charge_id}/receipt"
+            f"""
+**Payment Complete!**
+
+**Receipt:** [Click here to view your receipt](https://commerce.coinbase.com/pay/{charge_id}/receipt)
+        """
         )
     ]
     return state
@@ -415,19 +431,10 @@ def agent():
 
     return jsonify(
         {
-            "response": response_message,
+            "messages": [{"role": "assistant", "content": response_message}],
             "session_id": session_id,
             "address": web3.address,
             "balance": web3.balances("usdc"),
-            # "state": {
-            #     "matches": final_state["matches"],
-            #     "selected_item": (
-            #         final_state["selected_item"]
-            #         if "selected_item" in final_state
-            #         else None
-            #     ),
-            #     "next_step": final_state["next_step"],
-            # },
         }
     )
 

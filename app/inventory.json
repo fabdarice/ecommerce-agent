@@ -4,55 +4,64 @@
       "name": "Coinbase Hat - Basic Edition",
       "description": "A stylish Coinbase Hat with a minimalist design perfect for everyday wear.",
       "price": 19.99,
-      "delivery": "5-7 business days"
+      "delivery": "5-7 business days",
+      "url": "https://i.etsystatic.com/48011811/r/il/8cbd96/5891578804/il_fullxfull.5891578804_6rpa.jpg"
     },
     {
       "name": "Coinbase Hat - Classic Edition",
       "description": "Premium Coinbase Hat featuring embroidered logo details for a refined look.",
       "price": 24.99,
-      "delivery": "3-4 business days"
+      "delivery": "3-4 business days",
+      "url": "https://coinbaseshop.com/cdn/shop/files/20240203_845a_Photoshoot_Coinbase-Merch-Q1_IMGP9778.jpg?v=1707459710&width=1445"
     },
     {
       "name": "Coinbase Hat - Limited Edition",
       "description": "Exclusive Coinbase Hat with limited release design and enhanced materials.",
       "price": 29.99,
-      "delivery": "1-2 business days"
+      "delivery": "1-2 business days",
+      "url": "https://i.etsystatic.com/48011811/r/il/948d39/5891578766/il_570xN.5891578766_kv4v.jpg"
     },
     {
       "name": "Coinbase Sweater - Basic Edition",
       "description": "Comfortable Coinbase Sweater with a classic logo design, perfect for casual days.",
       "price": 39.99,
-      "delivery": "5-7 business days"
+      "delivery": "5-7 business days",
+      "url": ""
     },
     {
       "name": "Coinbase Sweater - Classic Edition",
       "description": "Stylish Coinbase Sweater made with quality fabric and detailed logo embroidery.",
       "price": 44.99,
-      "delivery": "3-4 business days"
+      "delivery": "3-4 business days",
+      "url": ""
     },
     {
       "name": "Coinbase Sweater - Premium Edition",
       "description": "Luxurious Coinbase Sweater crafted from premium materials with an exclusive design.",
       "price": 49.99,
-      "delivery": "1-2 business days"
+      "delivery": "1-2 business days",
+      "url": ""
     },
     {
       "name": "Coinbase Mug - Standard Edition",
       "description": "Durable Coinbase Mug with subtle branding, ideal for your daily coffee routine.",
       "price": 9.99,
-      "delivery": "5-7 business days"
+      "delivery": "5-7 business days",
+      "url": ""
     },
     {
       "name": "Coinbase Mug - Deluxe Edition",
       "description": "High-quality Coinbase Mug featuring a sleek design and superior finish.",
       "price": 12.99,
-      "delivery": "3-4 business days"
+      "delivery": "3-4 business days",
+      "url": ""
     },
     {
       "name": "Coinbase Mug - Collector's Edition",
       "description": "Exclusive Coinbase Mug with a collectible design and premium materials.",
       "price": 15.99,
-      "delivery": "1-2 business days"
+      "delivery": "1-2 business days",
+      "url": ""
     }
   ]
 }
