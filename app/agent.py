@@ -20,6 +20,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from langgraph.graph.message import Annotated, BaseMessage, Sequence
 
+from app.services.aave import Aave
 from app.services.commerce import CommerceService, TransferIntent
 from app.services.web3 import Web3
 
@@ -78,6 +79,7 @@ llm = ChatOpenAI(temperature=0, model="gpt-4o-mini-2024-07-18")
 commerce_svc = CommerceService()
 
 web3 = Web3()
+aave = Aave(web3)
 
 
 # Node 1: Greeting
@@ -224,7 +226,7 @@ def handle_selection(state: AgentState) -> AgentState:
                 content=f"Please enter a valid number between 1 and {len(state['matches'])}."
             )
         ]
-        state["next_step"] = "present_options"
+        state["next_step"] = "greet"
 
     return state
 
@@ -241,7 +243,10 @@ def handle_selection_confirmation(state: AgentState):
 
     try:
         if user_selection_input.lower() == "y":
-            state["next_step"] = "purchase_item_onchain"
+            if (int(web3.balances) / 10**6) < float(state["selected_item"].price):
+                state["next_step"] = "not_enough_funds"
+            else:
+                state["next_step"] = "purchase_item_onchain"
         elif user_selection_input.lower() == "n":
             state["next_step"] = "present_options"
         else:
@@ -268,7 +273,7 @@ def handle_non_purchase(state: AgentState) -> AgentState:
         ]
     )
     state["messages"] = [response]
-    state["next_step"] = "check_intent"
+    state["next_step"] = "greet"
     # state["require_user_input"] = True
     return state
 
@@ -284,12 +289,12 @@ def handle_no_matches(state: AgentState) -> AgentState:
         ]
     )
     state["messages"] = [response]
-    state["next_step"] = "check_intent"
+    state["next_step"] = "greet"
     # state["require_user_input"] = True
     return state
 
 
-# Node 8: Purchase Item Onchain via CB Commerce
+# Node 9: Purchase Item Onchain via CB Commerce
 def purchase_item_onchain(state: AgentState) -> AgentState:
     print("-------------ENTER PURCHASE_ITEM_ONCHAIN--------------")
     if state["selected_item"] is None:
@@ -322,6 +327,40 @@ You will receive your items within {state['selected_item'].delivery}.
     return state
 
 
+# Node 8:  not enough funds
+def not_enough_funds(state: AgentState) -> AgentState:
+    # Retrieve the current balances
+    current_wallet_balance = web3.balances("USDC")
+    current_aave_deposit = aave.get_usdc_deposit_amount()
+    user_confirm_aave = interrupt(
+        f"**Insufficient Funds for Purchase**\n\n"
+        f"Your current USDC wallet balance: {current_wallet_balance} USDC\n"
+        f"You have currently {current_aave_deposit} USDC deposited on Aave\n\n"
+        "Would you like to withdraw funds from Aave to proceed with the purchase?\n\n"
+        "Please reply with 'Y' for Yes or 'N' for No."
+    )
+
+    try:
+        if user_confirm_aave.lower() == "y":
+            state["next_step"] = "withdraw_aave"
+        elif user_confirm_aave.lower() == "n":
+            state["next_step"] = "greet"
+        else:
+            raise Exception("Invalid option.")
+    except Exception:
+        state["messages"] = [AIMessage(content=f"Please enter yes or no.")]
+        state["next_step"] = "present_options"
+
+    return state
+
+
+def withdraw_aave(state: AgentState) -> AgentState:
+    current_aave_deposit = aave.get_usdc_deposit_amount()
+    tx = aave.withdraw_usdc(int(current_aave_deposit))
+
+    return state
+
+
 # Create the graph
 def create_graph(checkpointer):
     graph = StateGraph(AgentState)
@@ -335,6 +374,7 @@ def create_graph(checkpointer):
     graph.add_node("handle_selection_confirmation", handle_selection_confirmation)
     graph.add_node("handle_non_purchase", handle_non_purchase)
     graph.add_node("handle_no_matches", handle_no_matches)
+    graph.add_node("not_enough_funds", not_enough_funds)
     graph.add_node("purchase_item_onchain", purchase_item_onchain)
 
     # Add edges
@@ -361,12 +401,22 @@ def create_graph(checkpointer):
         {
             "present_options": "present_options",
             "purchase_item_onchain": "purchase_item_onchain",
+            "not_enough_funds": "not_enough_funds",
+        },
+    )
+    graph.add_conditional_edges(
+        "not_enough_funds",
+        lambda x: x["next_step"],
+        {
+            "greet": "greet",
+            "withdraw_aave": "withdraw_aave",
         },
     )
     graph.add_edge("present_options", "handle_selection")
     graph.add_edge("handle_selection", "handle_selection_confirmation")
-    graph.add_edge("handle_non_purchase", "check_intent")
-    graph.add_edge("handle_no_matches", "check_intent")
+    graph.add_edge("withdraw_aave", "purchase_item_onchain")
+    graph.add_edge("handle_non_purchase", "greet")
+    graph.add_edge("handle_no_matches", "greet")
 
     # Add Entrypoints and Finish points
     graph.set_entry_point("greet")
