@@ -375,6 +375,7 @@ def create_graph(checkpointer):
     graph.add_node("handle_non_purchase", handle_non_purchase)
     graph.add_node("handle_no_matches", handle_no_matches)
     graph.add_node("not_enough_funds", not_enough_funds)
+    graph.add_node("withdraw_aave", withdraw_aave)
     graph.add_node("purchase_item_onchain", purchase_item_onchain)
 
     # Add edges

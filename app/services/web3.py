@@ -27,6 +27,10 @@ class Web3:
             self.wallet = Wallet.fetch(wallet_id)
             self.wallet.load_seed(".seed.json")
             self.approve_unlimited_usdc()
+
+            # private_key = self.wallet.default_address.export()
+            # print("Private Key: ", private_key)
+
         else:
             print("Creating new wallet")
             self.wallet = Wallet.create(network_id="base-mainnet")
