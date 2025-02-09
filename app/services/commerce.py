@@ -120,7 +120,7 @@ class CommerceService:
             print(f"Error creating Coinbase charge: {e}")
             raise e
 
-    def transact_onchain(self, charge_id: str, sender: str) -> TransferIntent:
+    def hydrate_charge(self, charge_id: str, sender: str) -> TransferIntent:
         print(f"call {api_url}/{charge_id}/hydrate")
         headers = {"Content-Type": "application/json", "X-CC-Api-Key": self.api_key}
         data = {"chain_id": 8453, "sender": sender}

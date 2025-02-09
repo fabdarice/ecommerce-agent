@@ -292,8 +292,10 @@ def handle_no_matches(state: AgentState) -> AgentState:
 # Node 8: Purchase Item Onchain via CB Commerce
 def purchase_item_onchain(state: AgentState) -> AgentState:
     print("-------------ENTER PURCHASE_ITEM_ONCHAIN--------------")
+    if state["selected_item"] is None:
+        return state
     charge_id: str = commerce_svc.create_charge(state["selected_item"])
-    transfer_intent: TransferIntent = commerce_svc.transact_onchain(
+    transfer_intent: TransferIntent = commerce_svc.hydrate_charge(
         charge_id, web3.address
     )
     print(f"Transfer Intent: {transfer_intent}")
@@ -310,6 +312,8 @@ def purchase_item_onchain(state: AgentState) -> AgentState:
         AIMessage(
             f"""
 **Payment Complete!**
+
+You will receive your items within {state['selected_item'].delivery}.
 
 **Receipt:** [Click here to view your receipt](https://commerce.coinbase.com/pay/{charge_id}/receipt)
         """
