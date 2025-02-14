@@ -102,7 +102,7 @@ class CommerceService:
             "description": item.description,
             "pricing_type": "fixed_price",
             "local_price": {
-                "amount": str(float(item.price) / 10000),
+                "amount": str(float(item.price)),
                 "currency": "usd",
             },
         }
@@ -111,9 +111,7 @@ class CommerceService:
             # Sending the POST request
             response = requests.post(api_url, headers=headers, json=data)
             # Output the response
-            print("Response Charge JSON:", response.json())
             charge_id = response.json()["data"]["id"]
-            print("Charge ID:", charge_id)
 
             return charge_id
         except requests.RequestException as e:
@@ -132,8 +130,6 @@ class CommerceService:
                 json=data,
             )
 
-            print("Response Hydrate JSON:", response.json())
-            print("Web3 Data", response.json()["data"]["web3_data"])
             web3_data = response.json()["data"]["web3_data"]
             return TransferIntent.extract(web3_data)
         except requests.RequestException as e:

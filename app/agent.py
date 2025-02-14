@@ -1,3 +1,4 @@
+from decimal import Decimal
 from langgraph.graph.state import Command
 from langgraph.types import Interrupt, interrupt
 from pydantic import BaseModel, ValidationError
@@ -71,6 +72,7 @@ class AgentState(TypedDict):
     matches: List[Inventory]
     selected_item: Optional[Inventory]
     next_step: str
+    aave_tx: Optional[str]
 
 
 # Initialize LLM
@@ -92,6 +94,7 @@ def greet(state: AgentState) -> AgentState:
         "next_step": "check_intent",
         "matches": [],
         "selected_item": None,
+        "aave_tx": None,
     }
 
 
@@ -99,7 +102,7 @@ def greet(state: AgentState) -> AgentState:
 def check_intent(state: AgentState) -> AgentState:
     print("----------------ENTER CHECK_INTENT--------------")
     state["user_input"] = interrupt(
-        "Hello there! Welcome to AgentShop. I’m here to help you find the perfect item. What would you like to purchase today?."
+        "Hello there! Welcome to Shop Pal. I’m here to help you find the perfect item. What would you like to purchase today?."
     )
     pydantic_parser = PydanticOutputParser(pydantic_object=IntentResponse)
 
@@ -220,7 +223,8 @@ def handle_selection(state: AgentState) -> AgentState:
             state["selected_item"] = state["matches"][selection - 1]
         else:
             raise Exception("Number invalid.")
-    except Exception:
+    except Exception as e:
+        print("Error: ", e)
         state["messages"] = [
             AIMessage(
                 content=f"Please enter a valid number between 1 and {len(state['matches'])}."
@@ -238,12 +242,12 @@ def handle_selection_confirmation(state: AgentState):
         return state
 
     user_selection_input = interrupt(
-        f"You have chosen '{state['selected_item'].name}'. Would you like to confirm your selection?\n\nPlease reply with 'Y' for Yes or 'N' for No."
+        f"You have selected '{state['selected_item'].name}<br><br>![{state['selected_item'].name}]({state['selected_item'].url}).<br><br>Would you like to confirm your selection?<br><br>Please reply with 'Y' for Yes or 'N' for No."
     )
 
     try:
         if user_selection_input.lower() == "y":
-            if (int(web3.balances) / 10**6) < float(state["selected_item"].price):
+            if float(web3.balances("usdc")) < float(state["selected_item"].price):  # type: ignore
                 state["next_step"] = "not_enough_funds"
             else:
                 state["next_step"] = "purchase_item_onchain"
@@ -251,7 +255,8 @@ def handle_selection_confirmation(state: AgentState):
             state["next_step"] = "present_options"
         else:
             raise Exception("Number invalid.")
-    except Exception:
+    except Exception as e:
+        print("Error: ", e)
         state["messages"] = [
             AIMessage(
                 content=f"Please enter a valid number between 1 and {len(state['matches'])}."
@@ -313,30 +318,34 @@ def purchase_item_onchain(state: AgentState) -> AgentState:
     print(
         f"Payment Complete. Receipt: https://commerce.coinbase.com/pay/{charge_id}/receipt"
     )
-    state["messages"] = [
-        AIMessage(
-            f"""
+    msg = f"""
 **Payment Complete!**
 
 You will receive your items within {state['selected_item'].delivery}.
-
+<br><br>
 **Receipt:** [Click here to view your receipt](https://commerce.coinbase.com/pay/{charge_id}/receipt)
         """
-        )
-    ]
+
+    msg = (
+        msg + f"<br>**Aave Withdrawal**: [Transaction]({state['aave_tx']})"
+        if state.get("aave_tx")
+        else msg
+    )
+
+    state["messages"] = [AIMessage(msg)]
     return state
 
 
 # Node 8:  not enough funds
 def not_enough_funds(state: AgentState) -> AgentState:
     # Retrieve the current balances
-    current_wallet_balance = web3.balances("USDC")
+    current_wallet_balance = web3.balances("usdc")
     current_aave_deposit = aave.get_usdc_deposit_amount()
     user_confirm_aave = interrupt(
-        f"**Insufficient Funds for Purchase**\n\n"
-        f"Your current USDC wallet balance: {current_wallet_balance} USDC\n"
-        f"You have currently {current_aave_deposit} USDC deposited on Aave\n\n"
-        "Would you like to withdraw funds from Aave to proceed with the purchase?\n\n"
+        f"**Insufficient funds for purchase**<br><br>"
+        f"Your current USDC wallet balance: {current_wallet_balance} USDC<br><br>"
+        f"I've detected that you currently have **{current_aave_deposit} USDC deposited on Aave**.<br> "
+        "Would you like to withdraw funds from Aave to proceed with the purchase?<br><br>"
         "Please reply with 'Y' for Yes or 'N' for No."
     )
 
@@ -356,7 +365,8 @@ def not_enough_funds(state: AgentState) -> AgentState:
 
 def withdraw_aave(state: AgentState) -> AgentState:
     current_aave_deposit = aave.get_usdc_deposit_amount()
-    tx = aave.withdraw_usdc(int(current_aave_deposit))
+    tx = aave.withdraw_usdc(current_aave_deposit)
+    state["aave_tx"] = tx.transaction_link
 
     return state
 
